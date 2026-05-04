@@ -57,8 +57,8 @@
   }
 
   #hud {
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
     padding: 8px 4px;
     font-family: 'Fredoka One', cursive;
@@ -66,6 +66,8 @@
     color: rgba(255,255,255,0.7);
   }
 
+  #hud .score-left  { text-align: left; }
+  #hud .score-right { text-align: right; }
   #hud span { color: #ffe066; font-size: 18px; }
 
   #sound-btn {
@@ -149,9 +151,9 @@
   <div id="level-display">NÍVEL 1</div>
   <canvas id="canvas" width="800" height="380"></canvas>
   <div id="hud">
-    <div>Pontos: <span id="score-display">0</span></div>
+    <div class="score-left">Pontos: <span id="score-display">0</span></div>
     <button id="sound-btn" title="Ligar/desligar som">🔊</button>
-    <div>Recorde: <span id="hi-display">0</span></div>
+    <div class="score-right">Recorde: <span id="hi-display">0</span></div>
   </div>
   <div id="overlay">
     <div class="overlay-title" id="overlay-title">A fuga da Leonor</div>
@@ -310,8 +312,26 @@ function stopMusic() {
 
 // --- Game State ---
 const GROUND_Y = H - 130;
-const GRAVITY = 0.6;
 const LEVEL_DISTANCES = [0,800,1800,3000,4500,6200,8200,10500,13000,16000];
+
+// =============================================================
+// 🦋 JUMP CONFIG — tweak these to adjust how the butterfly jumps
+// =============================================================
+// All values are in physics units per frame (game runs at 60fps).
+// Lower GRAVITY  = floatier, slower fall (more hang time)
+// Higher GRAVITY = snappier, heavier feel
+// JUMP_VELOCITY is NEGATIVE because Y increases downward.
+// More negative = jumps higher. Less negative = lower jumps.
+// STAR_BOOST_PER_STAR adds extra jump strength for each star collected.
+//   Stars stack — 3 stars = JUMP_VELOCITY + (3 × STAR_BOOST_PER_STAR)
+// MAX_STARS caps how high you can stack (prevents flying off-screen).
+const JUMP_CONFIG = {
+  GRAVITY:             0.38,   // try 0.30 (very floaty) → 0.70 (snappy)
+  JUMP_VELOCITY:      -12,     // base jump strength (negative). Try -10 → -16
+  STAR_BOOST_PER_STAR: -1.6,   // each star adds this much extra jump
+  MAX_STARS:           5,      // cap on collected stars
+};
+// =============================================================
 
 let state = 'idle';
 let score = 0;
@@ -320,11 +340,13 @@ let distance = 0;
 let level = 1;
 let speed = 3;
 let frameCount = 0;
+let deathTime = 0; // timestamp when player died, used to lock out instant restart
+const DEATH_LOCKOUT_MS = 600; // matches the overlay reveal delay below
 
 const player = {
   x: 120, y: GROUND_Y, w: 100, h: 104,
   vy: 0, onGround: true,
-  starActive: false,
+  starsCollected: 0, // how many stars stacked
   wingFlap: 0,
 };
 
@@ -433,7 +455,9 @@ function spawnVillain() {
   const count = getVillainCount();
   const gap = 150;
   for (let i = 0; i < count; i++) {
-    villains.push({ x: W + i*gap, y: GROUND_Y + (104-90), w: 80, h: 85 });
+    // Villain rendered at 80×85. Y offset keeps its feet on the ground line:
+    // butterfly height (104) minus villain height (85) = 19px lower top.
+    villains.push({ x: W + i*gap, y: GROUND_Y + (104-85), w: 80, h: 85 });
   }
 }
 function spawnStar() {
@@ -473,7 +497,9 @@ function checkLevel() {
 
 function doJump() {
   if (!player.onGround) return;
-  const jumpPower = player.starActive ? -19 : -15;
+  // Base jump + extra boost for each star collected (stars stack)
+  const stars = Math.min(player.starsCollected, JUMP_CONFIG.MAX_STARS);
+  const jumpPower = JUMP_CONFIG.JUMP_VELOCITY + stars * JUMP_CONFIG.STAR_BOOST_PER_STAR;
   player.vy = jumpPower;
   player.onGround = false;
   sfxJump();
@@ -482,8 +508,15 @@ function doJump() {
 document.addEventListener('keydown', e => {
   if (e.code === 'Space' || e.code === 'ArrowUp') {
     e.preventDefault();
-    if (state === 'idle' || state === 'dead') startGame();
-    else doJump();
+    if (state === 'idle') {
+      startGame();
+    } else if (state === 'dead') {
+      // Ignore presses during the brief death animation window.
+      // The overlay only appears after this delay, so the user knows when they can restart.
+      if (Date.now() - deathTime >= DEATH_LOCKOUT_MS) startGame();
+    } else {
+      doJump();
+    }
   }
 });
 
@@ -505,7 +538,7 @@ function startGame() {
   state = 'running';
   score = 0; distance = 0; level = 1; speed = 3; frameCount = 0;
   player.y = GROUND_Y; player.vy = 0; player.onGround = true;
-  player.starActive = false;
+  player.starsCollected = 0;
   villains = []; stars = []; particles = [];
   nextVillainIn = 120; nextStarIn = 250;
   paletteFrom = null; paletteProgress = 1;
@@ -516,6 +549,7 @@ function startGame() {
 
 function gameOver() {
   state = 'dead';
+  deathTime = Date.now();
   sfxDie();
   stopMusic();
   burst(player.x + 50, player.y + 52, '#ff6b6b', 20);
@@ -524,6 +558,8 @@ function gameOver() {
     localStorage.setItem('leonor_hi', hiScore);
   }
   setTimeout(() => {
+    // Guard: if the user already restarted (somehow), don't pop the overlay back open
+    if (state !== 'dead') return;
     document.getElementById('overlay').classList.remove('hidden');
     document.getElementById('overlay-title').textContent = 'Oh não!';
     document.getElementById('overlay-sub').textContent = 'A gosma apanhou-te!';
@@ -531,7 +567,7 @@ function gameOver() {
     document.getElementById('final-score').textContent = Math.floor(score);
     document.getElementById('final-best').textContent = hiScore;
     document.getElementById('start-btn').textContent = 'Tentar outra vez!';
-  }, 600);
+  }, DEATH_LOCKOUT_MS);
 }
 
 function drawCloud(c, palette) {
@@ -582,18 +618,36 @@ function drawSprite(key, x, y, w, h, alpha=1) {
 function drawPlayerStarEffect() {
   ctx.save();
   const t = Date.now()/300;
+  // Glow grows with stars collected
+  const intensity = Math.min(player.starsCollected, JUMP_CONFIG.MAX_STARS);
   ctx.shadowColor = '#ffe066';
-  ctx.shadowBlur = 18 + Math.sin(t)*8;
-  ctx.globalAlpha = 0.6;
+  ctx.shadowBlur = 10 + intensity * 6 + Math.sin(t)*5;
+  ctx.globalAlpha = 0.5 + intensity * 0.08;
   ctx.drawImage(imgs['butterfly'], player.x, player.y, player.w, player.h);
   ctx.restore();
+}
+
+// Draw small star indicators in the top-left of canvas to show stack count
+function drawStarIndicators() {
+  const count = Math.min(player.starsCollected, JUMP_CONFIG.MAX_STARS);
+  if (count === 0) return;
+  const sw = 24, sh = 20, gap = 4;
+  for (let i = 0; i < count; i++) {
+    const x = 12 + i * (sw + gap);
+    const y = 12;
+    ctx.save();
+    ctx.shadowColor = '#ffe066';
+    ctx.shadowBlur = 8;
+    drawSprite('star', x, y, sw, sh);
+    ctx.restore();
+  }
 }
 
 function update() {
   if (state !== 'running') return;
   frameCount++;
 
-  player.vy += GRAVITY;
+  player.vy += JUMP_CONFIG.GRAVITY;
   player.y += player.vy;
   if (player.y >= GROUND_Y) {
     player.y = GROUND_Y;
@@ -641,7 +695,9 @@ function update() {
     if (overlaps(player, 'butterfly', stars[i], 'star')) {
       burst(stars[i].x+25, stars[i].y+21, '#ffe066', 16);
       stars.splice(i,1);
-      player.starActive = true;
+      if (player.starsCollected < JUMP_CONFIG.MAX_STARS) {
+        player.starsCollected++;
+      }
       sfxStar();
     }
   }
@@ -691,7 +747,7 @@ function draw() {
 
   villains.forEach(v => drawSprite('villain', v.x, v.y, v.w, v.h));
 
-  if (player.starActive) drawPlayerStarEffect();
+  if (player.starsCollected > 0) drawPlayerStarEffect();
   const bobOffset = player.onGround ? Math.sin(player.wingFlap)*2 : 0;
   drawSprite('butterfly', player.x, player.y + bobOffset, player.w, player.h);
 
@@ -704,6 +760,8 @@ function draw() {
     ctx.fill();
     ctx.restore();
   });
+
+  drawStarIndicators();
 }
 
 function loop() {
