@@ -171,45 +171,43 @@ const W = canvas.width, H = canvas.height;
 // --- Assets ---
 const imgs = {};
 const masks = {}; // alpha masks for pixel-perfect collision: { data: Uint8Array, w, h }
+
+// [key, src, needsCollisionMask]
+// cloud.jpg is decorative only — no collision mask needed.
+// Drop a 120×94 cloud.jpg into assets/ and it will appear automatically.
 const ASSET_LIST = [
-  ['butterfly', 'assets/butterfly.png'],
-  ['villain',   'assets/villain.png'],
-  ['star',      'assets/star.png'],
+  ['butterfly', 'assets/butterfly.png', true],
+  ['villain',   'assets/villain.png',   true],
+  ['star',      'assets/star.png',      true],
+  ['cloud',     'assets/cloud.jpg',     false],
 ];
 let assetsLoaded = 0;
-ASSET_LIST.forEach(([key, src]) => {
+ASSET_LIST.forEach(([key, src, needsMask]) => {
   imgs[key] = new Image();
   imgs[key].onload = () => {
-    // Build alpha mask once the image has loaded
-    const w = imgs[key].naturalWidth, h = imgs[key].naturalHeight;
-    const off = document.createElement('canvas');
-    off.width = w; off.height = h;
-    const octx = off.getContext('2d');
-    octx.drawImage(imgs[key], 0, 0);
-    const pixels = octx.getImageData(0, 0, w, h).data;
-    const mask = new Uint8Array(w * h);
-    for (let i = 0; i < w * h; i++) {
-      mask[i] = pixels[i * 4 + 3] > 30 ? 1 : 0;
+    if (needsMask) {
+      // Build alpha mask once the image has loaded
+      const w = imgs[key].naturalWidth, h = imgs[key].naturalHeight;
+      const off = document.createElement('canvas');
+      off.width = w; off.height = h;
+      const octx = off.getContext('2d');
+      octx.drawImage(imgs[key], 0, 0);
+      const pixels = octx.getImageData(0, 0, w, h).data;
+      const mask = new Uint8Array(w * h);
+      for (let i = 0; i < w * h; i++) {
+        mask[i] = pixels[i * 4 + 3] > 30 ? 1 : 0;
+      }
+      masks[key] = { data: mask, w, h };
     }
-    masks[key] = { data: mask, w, h };
     assetsLoaded++;
   };
+  // Don't break the game if a non-essential asset (cloud.jpg) is missing
+  imgs[key].onerror = () => { assetsLoaded++; };
   imgs[key].src = src;
 });
 
-// --- Level palettes (one per level) ---
-const PALETTES = [
-  { top:'#1a0a2e', mid:'#2d1256', bot:'#4a2070', gT:'#3d1f5e', gB:'#1a0a2e', cloud:'#c8b8e8', line:'#7c6fa0' },
-  { top:'#0f2c4a', mid:'#1d4a7a', bot:'#3a7ab0', gT:'#1d4a7a', gB:'#0f2c4a', cloud:'#aed4f0', line:'#5a8fc0' },
-  { top:'#ff8a5b', mid:'#ffb380', bot:'#ffd4a3', gT:'#c4623a', gB:'#7a3820', cloud:'#fff4e0', line:'#a85f3d' },
-  { top:'#0a2818', mid:'#1f5a3a', bot:'#3d8a5e', gT:'#1f5a3a', gB:'#0a2818', cloud:'#c8e8d4', line:'#5a9a78' },
-  { top:'#3a0a4a', mid:'#7a1a8a', bot:'#c44ac4', gT:'#5a1a6a', gB:'#2a0530', cloud:'#f0c8e8', line:'#9a5aa8' },
-  { top:'#0a2a3a', mid:'#1a5a7a', bot:'#3aaab8', gT:'#1a4a5a', gB:'#0a2a3a', cloud:'#c0e8ec', line:'#5aa8b8' },
-  { top:'#4a2010', mid:'#8a4520', bot:'#d48050', gT:'#5a2818', gB:'#2a1008', cloud:'#f0d4b8', line:'#a86848' },
-  { top:'#1a0a3a', mid:'#3a1a6a', bot:'#6a3aaa', gT:'#2a1a5a', gB:'#0a0520', cloud:'#c8b8f0', line:'#7a5ac0' },
-  { top:'#2a0a0a', mid:'#7a1a2a', bot:'#c4404a', gT:'#4a1010', gB:'#1a0505', cloud:'#f0c0c8', line:'#a04050' },
-  { top:'#000000', mid:'#1a0a3a', bot:'#3a1a5a', gT:'#1a0a2a', gB:'#000000', cloud:'#f0e8ff', line:'#a090d0' },
-];
+// --- Fixed background palette (warm sunset, applied to every level) ---
+const PALETTE = { top:'#ff8a5b', mid:'#ffb380', bot:'#ffd4a3', gT:'#c4623a', gB:'#7a3820', cloud:'#fff4e0', line:'#a85f3d' };
 
 // --- Audio ---
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -218,6 +216,15 @@ let musicGain = null, sfxGain = null, masterGain = null;
 let soundOn = true;
 let musicLoopId = null;
 let scheduledOscs = []; // track all oscillators we've scheduled so we can stop them on restart
+
+// HTMLAudio for the music file. If assets/music.mp3 loads successfully,
+// it's used as background music. Otherwise the synth music plays as fallback.
+const musicAudio = new Audio('assets/music.mp3');
+musicAudio.loop = true;
+musicAudio.volume = 0.4;
+let musicFileAvailable = false;
+musicAudio.addEventListener('canplaythrough', () => { musicFileAvailable = true; }, { once: true });
+musicAudio.addEventListener('error', () => { musicFileAvailable = false; });
 
 function initAudio() {
   if (audioCtx) return;
@@ -251,6 +258,14 @@ function sfxDie()    { [440,330,220,110].forEach((f,i) => playTone(f,'sawtooth',
 function sfxLevel()  { [600,700,800,1000].forEach((f,i) => playTone(f,'triangle',0.12,null,i*0.05)); }
 
 function startMusic() {
+  // Prefer the music file when available
+  if (musicFileAvailable) {
+    musicAudio.currentTime = 0;
+    musicAudio.muted = !soundOn;
+    musicAudio.play().catch(() => { /* user gesture issues are silently ignored */ });
+    return;
+  }
+  // Fallback: synth music (only if audio context exists)
   if (musicLoopId !== null || !audioCtx) return;
   const bpm = 128, beat = 60/bpm;
   const pattern = [
@@ -301,8 +316,10 @@ function startMusic() {
 }
 
 function stopMusic() {
+  // Stop file-based music
+  try { musicAudio.pause(); musicAudio.currentTime = 0; } catch(e) {}
+  // Stop synth music
   if (musicLoopId !== null) { clearTimeout(musicLoopId); musicLoopId = null; }
-  // Stop all scheduled oscillators immediately so they don't bleed into next round
   scheduledOscs.forEach(osc => {
     try { osc.stop(0); } catch(e) {}
     try { osc.disconnect(); } catch(e) {}
@@ -312,7 +329,13 @@ function stopMusic() {
 
 // --- Game State ---
 const GROUND_Y = H - 130;
-const LEVEL_DISTANCES = [0,800,1800,3000,4500,6200,8200,10500,13000,16000];
+// Distance thresholds for each level. The gap between levels grows
+// gradually so later levels last a bit longer than early ones.
+const LEVEL_DISTANCES = [
+  0, 800, 1800, 3000, 4500, 6200, 8200, 10500, 13000, 16000,
+  19200, 22600, 26200, 30000, 34000, 38200, 42600, 47200, 52000, 57000,
+];
+const MAX_LEVEL = LEVEL_DISTANCES.length; // 20
 
 // =============================================================
 // 🦋 JUMP CONFIG — tweak these to adjust how the butterfly jumps
@@ -389,67 +412,52 @@ function overlaps(a, aKey, b, bKey) {
   return false;
 }
 
-// Cloud objects with stable pre-computed shapes
-function makeCloud() {
-  const r = 22 + Math.random()*16;
+// Cloud objects — image-based, with random size variation for natural feel.
+// Image source: assets/cloud.jpg (120×94 base size).
+// Each cloud gets a random scale between CLOUD_MIN_SCALE and CLOUD_MAX_SCALE
+// so they feel varied. Speed is also randomised so they drift independently.
+const CLOUD_BASE_W = 120;
+const CLOUD_BASE_H = 94;
+const CLOUD_MIN_SCALE = 0.55;
+const CLOUD_MAX_SCALE = 1.15;
+const CLOUD_COUNT = 5;
+
+function makeCloud(spawnAtRight = false) {
+  const scale = CLOUD_MIN_SCALE + Math.random() * (CLOUD_MAX_SCALE - CLOUD_MIN_SCALE);
+  const w = CLOUD_BASE_W * scale;
+  const h = CLOUD_BASE_H * scale;
   return {
-    x: Math.random()*W,
-    y: 30 + Math.random()*70,
-    r: r,
-    speed: 0.2 + Math.random()*0.3,
-    alpha: 0.3 + Math.random()*0.25,
-    puffs: [
-      { dx: 0,         dy: 0,        rs: 1.0  },
-      { dx: r*0.7,     dy: -r*0.15,  rs: 0.75 },
-      { dx: -r*0.8,    dy: -r*0.05,  rs: 0.7  },
-      { dx: r*0.3,     dy: r*0.2,    rs: 0.65 },
-      { dx: -r*0.3,    dy: r*0.25,   rs: 0.6  },
-    ],
+    // If spawnAtRight, place just off the right edge; otherwise scatter across visible area
+    x: spawnAtRight ? W + Math.random()*100 : Math.random() * W,
+    y: 10 + Math.random() * 100, // vary vertical position
+    w, h,
+    speed: 15 + Math.random() * 25,    // pixels per SECOND (delta-time scaled), drifts naturally
+    alpha: 0.55 + Math.random() * 0.35, // varying opacity for depth
   };
 }
-const clouds = Array.from({length: 6}, makeCloud);
+const clouds = Array.from({length: CLOUD_COUNT}, () => makeCloud(false));
 
 function getSpawnInterval() {
-  return Math.max(70, 170 - level * 8);
+  // Gap between villain waves shrinks with level. Floor of 50 frames
+  // (~0.83s at 60fps) keeps level 20 tough but still reactable with stars.
+  return Math.max(50, 170 - level * 6);
 }
 function getStarInterval() {
-  return 350 + level * 60;
+  // Stars get rarer as levels rise — capped so they still appear at level 20
+  return Math.min(900, 350 + level * 35);
 }
 function getVillainCount() {
-  if (level >= 6 && Math.random() < 0.3) return 2;
-  if (level >= 9 && Math.random() < 0.5) return 2;
+  // More likely to spawn doubles as levels progress.
+  // At level 15+, occasionally three villains appear in a tight cluster.
+  if (level >= 15 && Math.random() < 0.2) return 3;
+  if (level >= 12 && Math.random() < 0.45) return 2;
+  if (level >= 9  && Math.random() < 0.4) return 2;
+  if (level >= 6  && Math.random() < 0.3) return 2;
   return 1;
 }
 
 let nextVillainIn = 120;
 let nextStarIn = 250;
-
-// Palette transition state — when level changes, interpolate from prev to current over time
-let paletteFrom = null; // palette object we're transitioning from
-let paletteProgress = 1; // 0 = paletteFrom, 1 = current level palette
-const PALETTE_TRANSITION_FRAMES = 90; // ~1.5s at 60fps
-
-function hexToRgb(h) {
-  return [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)];
-}
-function lerpColor(c1, c2, t) {
-  const a = hexToRgb(c1), b = hexToRgb(c2);
-  const r = Math.round(a[0]+(b[0]-a[0])*t);
-  const g = Math.round(a[1]+(b[1]-a[1])*t);
-  const bl = Math.round(a[2]+(b[2]-a[2])*t);
-  return `rgb(${r},${g},${bl})`;
-}
-function lerpPalette(p1, p2, t) {
-  return {
-    top:   lerpColor(p1.top, p2.top, t),
-    mid:   lerpColor(p1.mid, p2.mid, t),
-    bot:   lerpColor(p1.bot, p2.bot, t),
-    gT:    lerpColor(p1.gT, p2.gT, t),
-    gB:    lerpColor(p1.gB, p2.gB, t),
-    cloud: lerpColor(p1.cloud, p2.cloud, t),
-    line:  lerpColor(p1.line, p2.line, t),
-  };
-}
 
 function spawnVillain() {
   const count = getVillainCount();
@@ -474,15 +482,14 @@ function burst(x, y, color, n=12) {
 }
 
 function checkLevel() {
-  for (let i=9; i>=0; i--) {
+  for (let i = MAX_LEVEL - 1; i >= 0; i--) {
     if (distance >= LEVEL_DISTANCES[i]) {
       const newLevel = i+1;
       if (newLevel !== level) {
-        // Snapshot the current (possibly mid-transition) palette as the starting point
-        paletteFrom = getCurrentPalette();
-        paletteProgress = 0;
         level = newLevel;
-        speed = 3 + (level-1)*0.55;
+        // Speed scaling tapers off after level 10 so level 20 isn't unplayable.
+        // L1=3, L10≈7.5, L15≈9, L20≈10.5 px/frame at 60fps.
+        speed = 3 + Math.min(level-1, 9) * 0.5 + Math.max(0, level-10) * 0.3;
         sfxLevel();
         const ld = document.getElementById('level-display');
         ld.textContent = `NÍVEL ${level}`;
@@ -529,6 +536,8 @@ document.getElementById('sound-btn').addEventListener('click', () => {
   if (masterGain && audioCtx) {
     masterGain.gain.setTargetAtTime(soundOn ? 1 : 0, audioCtx.currentTime, 0.02);
   }
+  // Also mute the file-based music (which doesn't route through Web Audio)
+  musicAudio.muted = !soundOn;
 });
 
 function startGame() {
@@ -541,7 +550,6 @@ function startGame() {
   player.starsCollected = 0;
   villains = []; stars = []; particles = [];
   nextVillainIn = 120; nextStarIn = 250;
-  paletteFrom = null; paletteProgress = 1;
   document.getElementById('level-display').textContent = 'NÍVEL 1';
   document.getElementById('overlay').classList.add('hidden');
   startMusic();
@@ -570,15 +578,12 @@ function gameOver() {
   }, DEATH_LOCKOUT_MS);
 }
 
-function drawCloud(c, palette) {
+function drawCloud(c) {
+  // Falls back to nothing if cloud.jpg hasn't been added yet.
+  if (!imgs.cloud || !imgs.cloud.complete || !imgs.cloud.naturalWidth) return;
   ctx.save();
   ctx.globalAlpha = c.alpha;
-  ctx.fillStyle = palette.cloud;
-  c.puffs.forEach(p => {
-    ctx.beginPath();
-    ctx.arc(c.x + p.dx, c.y + p.dy, c.r * p.rs, 0, Math.PI*2);
-    ctx.fill();
-  });
+  ctx.drawImage(imgs.cloud, c.x, c.y, c.w, c.h);
   ctx.restore();
 }
 
@@ -643,12 +648,17 @@ function drawStarIndicators() {
   }
 }
 
-function update() {
+function update(dt) {
+  // dt is seconds elapsed since the last frame.
+  // Most movement code was written for 60fps. To stay consistent across refresh
+  // rates (60Hz vs 120Hz vs 144Hz), we multiply per-frame values by `df`
+  // ("delta frames") = how many 60fps frames worth of time just passed.
   if (state !== 'running') return;
+  const df = dt * 60;
   frameCount++;
 
-  player.vy += JUMP_CONFIG.GRAVITY;
-  player.y += player.vy;
+  player.vy += JUMP_CONFIG.GRAVITY * df;
+  player.y += player.vy * df;
   if (player.y >= GROUND_Y) {
     player.y = GROUND_Y;
     player.vy = 0;
@@ -657,40 +667,35 @@ function update() {
 
   // Star power persists once collected — no timer
 
-  // Advance palette transition
-  if (paletteProgress < 1) {
-    paletteProgress = Math.min(1, paletteProgress + 1/PALETTE_TRANSITION_FRAMES);
-  }
+  player.wingFlap = (player.wingFlap + 0.25 * df) % (Math.PI*2);
 
-  player.wingFlap = (player.wingFlap + 0.25) % (Math.PI*2);
-
-  distance += speed;
-  score += speed * 0.05;
+  distance += speed * df;
+  score += speed * 0.05 * df;
   document.getElementById('score-display').textContent = Math.floor(score);
   document.getElementById('hi-display').textContent = Math.max(hiScore, Math.floor(score));
 
   checkLevel();
 
-  nextVillainIn--;
+  nextVillainIn -= df;
   if (nextVillainIn <= 0) {
     spawnVillain();
     nextVillainIn = getSpawnInterval() + Math.floor(Math.random()*40);
   }
-  nextStarIn--;
+  nextStarIn -= df;
   if (nextStarIn <= 0) {
     spawnStar();
     nextStarIn = getStarInterval() + Math.floor(Math.random()*100);
   }
 
   for (let i = villains.length-1; i >= 0; i--) {
-    villains[i].x -= speed;
+    villains[i].x -= speed * df;
     if (villains[i].x < -100) { villains.splice(i,1); continue; }
     if (overlaps(player, 'butterfly', villains[i], 'villain')) { gameOver(); return; }
   }
 
   for (let i = stars.length-1; i >= 0; i--) {
-    stars[i].x -= speed;
-    stars[i].bob += 0.05;
+    stars[i].x -= speed * df;
+    stars[i].bob += 0.05 * df;
     if (stars[i].x < -60) { stars.splice(i,1); continue; }
     if (overlaps(player, 'butterfly', stars[i], 'star')) {
       burst(stars[i].x+25, stars[i].y+21, '#ffe066', 16);
@@ -704,37 +709,28 @@ function update() {
 
   for (let i = particles.length-1; i >= 0; i--) {
     const p = particles[i];
-    p.x += p.vx; p.y += p.vy; p.vy += 0.15;
-    p.life -= p.decay;
+    p.x += p.vx * df; p.y += p.vy * df; p.vy += 0.15 * df;
+    p.life -= p.decay * df;
     if (p.life <= 0) particles.splice(i,1);
   }
 
+  // Clouds drift right-to-left independently of game speed.
+  // Their .speed is already in pixels-per-second, so multiply by raw dt.
   clouds.forEach(c => {
-    c.x -= c.speed;
-    if (c.x < -80) {
-      const fresh = makeCloud();
-      Object.assign(c, fresh, { x: W+40 });
+    c.x -= c.speed * dt;
+    // Cull when fully off the left edge, then respawn just past the right edge
+    if (c.x + c.w < 0) {
+      const fresh = makeCloud(true); // spawn at right
+      Object.assign(c, fresh);
     }
   });
 }
 
-function getCurrentPalette() {
-  const target = PALETTES[Math.min(level-1, 9)];
-  if (paletteFrom && paletteProgress < 1) {
-    // Ease in/out for smoother feel
-    const t = paletteProgress;
-    const eased = t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t + 2, 2)/2;
-    return lerpPalette(paletteFrom, target, eased);
-  }
-  return target;
-}
-
 function draw() {
-  const palette = getCurrentPalette();
   ctx.clearRect(0, 0, W, H);
-  drawBg(palette);
-  clouds.forEach(c => drawCloud(c, palette));
-  drawGround(palette);
+  drawBg(PALETTE);
+  clouds.forEach(c => drawCloud(c));
+  drawGround(PALETTE);
 
   stars.forEach(s => {
     const bobY = Math.sin(s.bob)*5;
@@ -764,14 +760,23 @@ function draw() {
   drawStarIndicators();
 }
 
-function loop() {
-  update();
+// Main loop with delta-time so the game runs at the same speed regardless
+// of the display's refresh rate (60Hz vs 120Hz vs 144Hz). Without this,
+// the game appears faster on high-refresh-rate monitors.
+let lastFrameTime = 0;
+function loop(now) {
+  if (!lastFrameTime) lastFrameTime = now;
+  // dt is seconds since previous frame. Cap at 0.05s to avoid huge jumps if the
+  // tab was backgrounded (otherwise the player would teleport through obstacles).
+  const dt = Math.min((now - lastFrameTime) / 1000, 0.05);
+  lastFrameTime = now;
+  update(dt);
   draw();
   requestAnimationFrame(loop);
 }
 
 document.getElementById('hi-display').textContent = hiScore;
-loop();
+requestAnimationFrame(loop);
 </script>
 </body>
 </html>
