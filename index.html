@@ -168,6 +168,7 @@ const W = canvas.width, H = canvas.height;
 
 // --- Assets ---
 const imgs = {};
+const masks = {}; // alpha masks for pixel-perfect collision: { data: Uint8Array, w, h }
 const ASSET_LIST = [
   ['butterfly', 'assets/butterfly.png'],
   ['villain',   'assets/villain.png'],
@@ -176,7 +177,21 @@ const ASSET_LIST = [
 let assetsLoaded = 0;
 ASSET_LIST.forEach(([key, src]) => {
   imgs[key] = new Image();
-  imgs[key].onload = () => { assetsLoaded++; };
+  imgs[key].onload = () => {
+    // Build alpha mask once the image has loaded
+    const w = imgs[key].naturalWidth, h = imgs[key].naturalHeight;
+    const off = document.createElement('canvas');
+    off.width = w; off.height = h;
+    const octx = off.getContext('2d');
+    octx.drawImage(imgs[key], 0, 0);
+    const pixels = octx.getImageData(0, 0, w, h).data;
+    const mask = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+      mask[i] = pixels[i * 4 + 3] > 30 ? 1 : 0;
+    }
+    masks[key] = { data: mask, w, h };
+    assetsLoaded++;
+  };
   imgs[key].src = src;
 });
 
@@ -200,6 +215,7 @@ let audioCtx = null;
 let musicGain = null, sfxGain = null, masterGain = null;
 let soundOn = true;
 let musicLoopId = null;
+let scheduledOscs = []; // track all oscillators we've scheduled so we can stop them on restart
 
 function initAudio() {
   if (audioCtx) return;
@@ -254,6 +270,7 @@ function startMusic() {
       g.gain.exponentialRampToValueAtTime(0.001, t + beat * 0.45);
       osc.connect(g); g.connect(musicGain);
       osc.start(t); osc.stop(t + beat * 0.5);
+      scheduledOscs.push(osc);
     });
     [0,2,4,6].forEach(b => {
       const osc = audioCtx.createOscillator();
@@ -266,6 +283,7 @@ function startMusic() {
       g.gain.exponentialRampToValueAtTime(0.001, t + beat*0.8);
       osc.connect(g); g.connect(musicGain);
       osc.start(t); osc.stop(t + beat);
+      scheduledOscs.push(osc);
     });
     return startTime + loopLen * beat;
   }
@@ -282,6 +300,12 @@ function startMusic() {
 
 function stopMusic() {
   if (musicLoopId !== null) { clearTimeout(musicLoopId); musicLoopId = null; }
+  // Stop all scheduled oscillators immediately so they don't bleed into next round
+  scheduledOscs.forEach(osc => {
+    try { osc.stop(0); } catch(e) {}
+    try { osc.disconnect(); } catch(e) {}
+  });
+  scheduledOscs = [];
 }
 
 // --- Game State ---
@@ -300,7 +324,7 @@ let frameCount = 0;
 const player = {
   x: 120, y: GROUND_Y, w: 100, h: 104,
   vy: 0, onGround: true,
-  starActive: false, starTimer: 0,
+  starActive: false,
   wingFlap: 0,
 };
 
@@ -308,14 +332,39 @@ let villains = [];
 let stars = [];
 let particles = [];
 
-function bbox(e) {
-  const mx = e.w * 0.175, my = e.h * 0.175;
-  return { x: e.x + mx, y: e.y + my, w: e.w * 0.65, h: e.h * 0.65 };
-}
+// Pixel-perfect collision using alpha masks.
+// Fast AABB pre-check, then sample overlapping region against both masks.
+function overlaps(a, aKey, b, bKey) {
+  // AABB first
+  if (a.x >= b.x + b.w || a.x + a.w <= b.x) return false;
+  if (a.y >= b.y + b.h || a.y + a.h <= b.y) return false;
 
-function overlaps(a, b) {
-  const ba = bbox(a), bb = bbox(b);
-  return ba.x < bb.x+bb.w && ba.x+ba.w > bb.x && ba.y < bb.y+bb.h && ba.y+ba.h > bb.y;
+  const mA = masks[aKey], mB = masks[bKey];
+  if (!mA || !mB) return false; // masks not yet built — fall through to no-collision
+
+  // Compute the overlapping rectangle in world space
+  const x1 = Math.max(a.x, b.x);
+  const y1 = Math.max(a.y, b.y);
+  const x2 = Math.min(a.x + a.w, b.x + b.w);
+  const y2 = Math.min(a.y + a.h, b.y + b.h);
+
+  // Step in pixels — sample every 2px for performance, still very accurate
+  const step = 2;
+  // Map from world coord -> source-image pixel coord (sprites may be scaled)
+  const sxA = mA.w / a.w, syA = mA.h / a.h;
+  const sxB = mB.w / b.w, syB = mB.h / b.h;
+
+  for (let y = y1; y < y2; y += step) {
+    for (let x = x1; x < x2; x += step) {
+      const ax = ((x - a.x) * sxA) | 0;
+      const ay = ((y - a.y) * syA) | 0;
+      if (mA.data[ay * mA.w + ax] === 0) continue;
+      const bx = ((x - b.x) * sxB) | 0;
+      const by = ((y - b.y) * syB) | 0;
+      if (mB.data[by * mB.w + bx] === 1) return true;
+    }
+  }
+  return false;
 }
 
 // Cloud objects with stable pre-computed shapes
@@ -353,6 +402,33 @@ function getVillainCount() {
 let nextVillainIn = 120;
 let nextStarIn = 250;
 
+// Palette transition state — when level changes, interpolate from prev to current over time
+let paletteFrom = null; // palette object we're transitioning from
+let paletteProgress = 1; // 0 = paletteFrom, 1 = current level palette
+const PALETTE_TRANSITION_FRAMES = 90; // ~1.5s at 60fps
+
+function hexToRgb(h) {
+  return [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)];
+}
+function lerpColor(c1, c2, t) {
+  const a = hexToRgb(c1), b = hexToRgb(c2);
+  const r = Math.round(a[0]+(b[0]-a[0])*t);
+  const g = Math.round(a[1]+(b[1]-a[1])*t);
+  const bl = Math.round(a[2]+(b[2]-a[2])*t);
+  return `rgb(${r},${g},${bl})`;
+}
+function lerpPalette(p1, p2, t) {
+  return {
+    top:   lerpColor(p1.top, p2.top, t),
+    mid:   lerpColor(p1.mid, p2.mid, t),
+    bot:   lerpColor(p1.bot, p2.bot, t),
+    gT:    lerpColor(p1.gT, p2.gT, t),
+    gB:    lerpColor(p1.gB, p2.gB, t),
+    cloud: lerpColor(p1.cloud, p2.cloud, t),
+    line:  lerpColor(p1.line, p2.line, t),
+  };
+}
+
 function spawnVillain() {
   const count = getVillainCount();
   const gap = 150;
@@ -378,6 +454,9 @@ function checkLevel() {
     if (distance >= LEVEL_DISTANCES[i]) {
       const newLevel = i+1;
       if (newLevel !== level) {
+        // Snapshot the current (possibly mid-transition) palette as the starting point
+        paletteFrom = getCurrentPalette();
+        paletteProgress = 0;
         level = newLevel;
         speed = 3 + (level-1)*0.55;
         sfxLevel();
@@ -422,12 +501,14 @@ document.getElementById('sound-btn').addEventListener('click', () => {
 function startGame() {
   initAudio();
   if (audioCtx.state === 'suspended') audioCtx.resume();
+  stopMusic(); // ensure no leftover music from previous round
   state = 'running';
   score = 0; distance = 0; level = 1; speed = 3; frameCount = 0;
   player.y = GROUND_Y; player.vy = 0; player.onGround = true;
-  player.starActive = false; player.starTimer = 0;
+  player.starActive = false;
   villains = []; stars = []; particles = [];
   nextVillainIn = 120; nextStarIn = 250;
+  paletteFrom = null; paletteProgress = 1;
   document.getElementById('level-display').textContent = 'NÍVEL 1';
   document.getElementById('overlay').classList.add('hidden');
   startMusic();
@@ -520,9 +601,11 @@ function update() {
     player.onGround = true;
   }
 
-  if (player.starActive) {
-    player.starTimer--;
-    if (player.starTimer <= 0) { player.starActive = false; }
+  // Star power persists once collected — no timer
+
+  // Advance palette transition
+  if (paletteProgress < 1) {
+    paletteProgress = Math.min(1, paletteProgress + 1/PALETTE_TRANSITION_FRAMES);
   }
 
   player.wingFlap = (player.wingFlap + 0.25) % (Math.PI*2);
@@ -548,18 +631,17 @@ function update() {
   for (let i = villains.length-1; i >= 0; i--) {
     villains[i].x -= speed;
     if (villains[i].x < -100) { villains.splice(i,1); continue; }
-    if (overlaps(player, villains[i])) { gameOver(); return; }
+    if (overlaps(player, 'butterfly', villains[i], 'villain')) { gameOver(); return; }
   }
 
   for (let i = stars.length-1; i >= 0; i--) {
     stars[i].x -= speed;
     stars[i].bob += 0.05;
     if (stars[i].x < -60) { stars.splice(i,1); continue; }
-    if (overlaps(player, stars[i])) {
+    if (overlaps(player, 'butterfly', stars[i], 'star')) {
       burst(stars[i].x+25, stars[i].y+21, '#ffe066', 16);
       stars.splice(i,1);
       player.starActive = true;
-      player.starTimer = 300;
       sfxStar();
     }
   }
@@ -581,7 +663,14 @@ function update() {
 }
 
 function getCurrentPalette() {
-  return PALETTES[Math.min(level-1, 9)];
+  const target = PALETTES[Math.min(level-1, 9)];
+  if (paletteFrom && paletteProgress < 1) {
+    // Ease in/out for smoother feel
+    const t = paletteProgress;
+    const eased = t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t + 2, 2)/2;
+    return lerpPalette(paletteFrom, target, eased);
+  }
+  return target;
 }
 
 function draw() {
@@ -605,14 +694,6 @@ function draw() {
   if (player.starActive) drawPlayerStarEffect();
   const bobOffset = player.onGround ? Math.sin(player.wingFlap)*2 : 0;
   drawSprite('butterfly', player.x, player.y + bobOffset, player.w, player.h);
-
-  if (player.starActive) {
-    const pct = player.starTimer / 300;
-    ctx.fillStyle = 'rgba(255,224,102,0.2)';
-    ctx.fillRect(player.x, player.y - 10, player.w, 5);
-    ctx.fillStyle = '#ffe066';
-    ctx.fillRect(player.x, player.y - 10, player.w * pct, 5);
-  }
 
   particles.forEach(p => {
     ctx.save();
