@@ -173,13 +173,14 @@ const imgs = {};
 const masks = {}; // alpha masks for pixel-perfect collision: { data: Uint8Array, w, h }
 
 // [key, src, needsCollisionMask]
-// cloud.jpg is decorative only — no collision mask needed.
-// Drop a 120×94 cloud.jpg into assets/ and it will appear automatically.
+// Decorative-only assets (clouds, etc.) skip mask generation.
+// If an asset file is missing the game still runs — that asset just won't render.
 const ASSET_LIST = [
   ['butterfly', 'assets/butterfly.png', true],
   ['villain',   'assets/villain.png',   true],
   ['star',      'assets/star.png',      true],
-  ['cloud',     'assets/cloud.jpg',     false],
+  ['evilstar',  'assets/evilstar.png',  true],
+  ['cloud',     'assets/clouds.png',    false],
 ];
 let assetsLoaded = 0;
 ASSET_LIST.forEach(([key, src, needsMask]) => {
@@ -201,7 +202,7 @@ ASSET_LIST.forEach(([key, src, needsMask]) => {
     }
     assetsLoaded++;
   };
-  // Don't break the game if a non-essential asset (cloud.jpg) is missing
+  // Don't break the game if a non-essential asset (e.g. clouds.png) is missing
   imgs[key].onerror = () => { assetsLoaded++; };
   imgs[key].src = src;
 });
@@ -253,7 +254,8 @@ function playTone(freq, type, duration, gainNode, when=0, vol=1) {
 }
 
 function sfxJump()   { playTone(520,'sine',0.12); playTone(680,'sine',0.1,null,0.08); }
-function sfxStar()   { [600,750,900,1100].forEach((f,i) => playTone(f,'sine',0.1,null,i*0.07)); }
+function sfxStar()   { [800,1100,1400].forEach((f,i) => playTone(f,'sine',0.06,null,i*0.025,0.6)); }
+function sfxEvilStar() { [400,300,200].forEach((f,i) => playTone(f,'square',0.1,null,i*0.05,0.5)); }
 function sfxDie()    { [440,330,220,110].forEach((f,i) => playTone(f,'sawtooth',0.18,null,i*0.1,0.6)); }
 function sfxLevel()  { [600,700,800,1000].forEach((f,i) => playTone(f,'triangle',0.12,null,i*0.05)); }
 
@@ -341,18 +343,24 @@ const MAX_LEVEL = LEVEL_DISTANCES.length; // 20
 // 🦋 JUMP CONFIG — tweak these to adjust how the butterfly jumps
 // =============================================================
 // All values are in physics units per frame (game runs at 60fps).
-// Lower GRAVITY  = floatier, slower fall (more hang time)
-// Higher GRAVITY = snappier, heavier feel
-// JUMP_VELOCITY is NEGATIVE because Y increases downward.
-// More negative = jumps higher. Less negative = lower jumps.
-// STAR_BOOST_PER_STAR adds extra jump strength for each star collected.
-//   Stars stack — 3 stars = JUMP_VELOCITY + (3 × STAR_BOOST_PER_STAR)
-// MAX_STARS caps how high you can stack (prevents flying off-screen).
+// GRAVITY: pull-down force.
+//   Lower  = floatier, slower fall, more hang time
+//   Higher = snappier, heavier feel
+// JUMP_VELOCITY: starting upward speed when jumping (negative because Y grows downward).
+//   More negative = higher jumps. Less negative = lower jumps.
+// STAR_GRAVITY_REDUCTION_PER_STAR: each star REDUCES gravity by this fraction.
+//   So peak jump height stays roughly the same, but the butterfly hangs in the
+//   air longer — making it easier to clear obstacles without flying off-screen.
+//   Example: 0.06 = each star reduces gravity by 6%. With 10 stars, gravity is 40% of base.
+// STAR_JUMP_BOOST_PER_STAR: small extra jump-velocity boost per star (kept gentle).
+// MAX_STARS: cap on collected stars.
 const JUMP_CONFIG = {
-  GRAVITY:             0.38,   // try 0.30 (very floaty) → 0.70 (snappy)
-  JUMP_VELOCITY:      -12,     // base jump strength (negative). Try -10 → -16
-  STAR_BOOST_PER_STAR: -1.6,   // each star adds this much extra jump
-  MAX_STARS:           5,      // cap on collected stars
+  GRAVITY:                          0.38,   // try 0.30 (very floaty) → 0.70 (snappy)
+  JUMP_VELOCITY:                   -12,     // base jump strength (negative). Try -10 → -16
+  STAR_JUMP_BOOST_PER_STAR:        -0.5,    // each star adds this much extra jump (gentle)
+  STAR_GRAVITY_REDUCTION_PER_STAR:  0.06,   // each star reduces gravity by this fraction
+  MIN_GRAVITY_FACTOR:               0.35,   // floor: gravity never drops below 35% of base
+  MAX_STARS:                       10,      // cap on collected stars
 };
 // =============================================================
 
@@ -375,6 +383,7 @@ const player = {
 
 let villains = [];
 let stars = [];
+let evilStars = []; // bad stars that remove a collected star on contact
 let particles = [];
 
 // Pixel-perfect collision using alpha masks.
@@ -413,7 +422,7 @@ function overlaps(a, aKey, b, bKey) {
 }
 
 // Cloud objects — image-based, with random size variation for natural feel.
-// Image source: assets/cloud.jpg (120×94 base size).
+// Image source: assets/clouds.png (120×94 base size; PNG with transparency recommended).
 // Each cloud gets a random scale between CLOUD_MIN_SCALE and CLOUD_MAX_SCALE
 // so they feel varied. Speed is also randomised so they drift independently.
 const CLOUD_BASE_W = 120;
@@ -446,6 +455,12 @@ function getStarInterval() {
   // Stars get rarer as levels rise — capped so they still appear at level 20
   return Math.min(900, 350 + level * 35);
 }
+function getEvilStarInterval() {
+  // Evil stars start appearing from level 2 and become more frequent at higher levels.
+  // Always less common than good stars (longer interval).
+  if (level < 2) return Infinity; // no evil stars at level 1
+  return Math.max(450, 1100 - level * 30);
+}
 function getVillainCount() {
   // More likely to spawn doubles as levels progress.
   // At level 15+, occasionally three villains appear in a tight cluster.
@@ -458,18 +473,33 @@ function getVillainCount() {
 
 let nextVillainIn = 120;
 let nextStarIn = 250;
+let nextEvilStarIn = 600; // evil stars are rarer than good ones
+
+// Villain size variance — base is 80×85, scales between min and max for visual variety.
+// Bottoms always align with the ground line (feet on the floor).
+const VILLAIN_BASE_W = 80;
+const VILLAIN_BASE_H = 85;
+const VILLAIN_MIN_SCALE = 0.85;
+const VILLAIN_MAX_SCALE = 1.25;
 
 function spawnVillain() {
   const count = getVillainCount();
   const gap = 150;
   for (let i = 0; i < count; i++) {
-    // Villain rendered at 80×85. Y offset keeps its feet on the ground line:
-    // butterfly height (104) minus villain height (85) = 19px lower top.
-    villains.push({ x: W + i*gap, y: GROUND_Y + (104-85), w: 80, h: 85 });
+    // Each villain in the wave gets its own random size for natural feel
+    const scale = VILLAIN_MIN_SCALE + Math.random() * (VILLAIN_MAX_SCALE - VILLAIN_MIN_SCALE);
+    const w = VILLAIN_BASE_W * scale;
+    const h = VILLAIN_BASE_H * scale;
+    // Keep feet on the ground: top = GROUND_Y + (butterfly_h - this_villain_h)
+    villains.push({ x: W + i*gap, y: GROUND_Y + (104 - h), w, h });
   }
 }
 function spawnStar() {
   stars.push({ x: W + 50, y: GROUND_Y - 90 - Math.random()*30, w: 50, h: 42, bob: Math.random()*Math.PI*2 });
+}
+function spawnEvilStar() {
+  // Evil star sits at a similar height to a regular star
+  evilStars.push({ x: W + 50, y: GROUND_Y - 90 - Math.random()*30, w: 50, h: 42, bob: Math.random()*Math.PI*2 });
 }
 
 function burst(x, y, color, n=12) {
@@ -490,7 +520,7 @@ function checkLevel() {
         // Speed scaling tapers off after level 10 so level 20 isn't unplayable.
         // L1=3, L10≈7.5, L15≈9, L20≈10.5 px/frame at 60fps.
         speed = 3 + Math.min(level-1, 9) * 0.5 + Math.max(0, level-10) * 0.3;
-        sfxLevel();
+        // Level-up no longer plays a sound — visual cue (level text pop) is enough
         const ld = document.getElementById('level-display');
         ld.textContent = `NÍVEL ${level}`;
         ld.classList.remove('level-up');
@@ -504,12 +534,25 @@ function checkLevel() {
 
 function doJump() {
   if (!player.onGround) return;
-  // Base jump + extra boost for each star collected (stars stack)
+  // Base jump + small extra boost per star (most of the star benefit comes from
+  // reduced gravity in the update loop — see currentGravity()).
   const stars = Math.min(player.starsCollected, JUMP_CONFIG.MAX_STARS);
-  const jumpPower = JUMP_CONFIG.JUMP_VELOCITY + stars * JUMP_CONFIG.STAR_BOOST_PER_STAR;
+  const jumpPower = JUMP_CONFIG.JUMP_VELOCITY + stars * JUMP_CONFIG.STAR_JUMP_BOOST_PER_STAR;
   player.vy = jumpPower;
   player.onGround = false;
   sfxJump();
+}
+
+// Compute current gravity based on collected stars.
+// Each star reduces gravity by STAR_GRAVITY_REDUCTION_PER_STAR (fractional).
+// Floored at MIN_GRAVITY_FACTOR so the butterfly never floats forever.
+function currentGravity() {
+  const stars = Math.min(player.starsCollected, JUMP_CONFIG.MAX_STARS);
+  const factor = Math.max(
+    JUMP_CONFIG.MIN_GRAVITY_FACTOR,
+    1 - stars * JUMP_CONFIG.STAR_GRAVITY_REDUCTION_PER_STAR
+  );
+  return JUMP_CONFIG.GRAVITY * factor;
 }
 
 document.addEventListener('keydown', e => {
@@ -548,8 +591,8 @@ function startGame() {
   score = 0; distance = 0; level = 1; speed = 3; frameCount = 0;
   player.y = GROUND_Y; player.vy = 0; player.onGround = true;
   player.starsCollected = 0;
-  villains = []; stars = []; particles = [];
-  nextVillainIn = 120; nextStarIn = 250;
+  villains = []; stars = []; evilStars = []; particles = [];
+  nextVillainIn = 120; nextStarIn = 250; nextEvilStarIn = 600;
   document.getElementById('level-display').textContent = 'NÍVEL 1';
   document.getElementById('overlay').classList.add('hidden');
   startMusic();
@@ -579,7 +622,7 @@ function gameOver() {
 }
 
 function drawCloud(c) {
-  // Falls back to nothing if cloud.jpg hasn't been added yet.
+  // Falls back to nothing if clouds.png hasn't been added yet.
   if (!imgs.cloud || !imgs.cloud.complete || !imgs.cloud.naturalWidth) return;
   ctx.save();
   ctx.globalAlpha = c.alpha;
@@ -657,7 +700,7 @@ function update(dt) {
   const df = dt * 60;
   frameCount++;
 
-  player.vy += JUMP_CONFIG.GRAVITY * df;
+  player.vy += currentGravity() * df;
   player.y += player.vy * df;
   if (player.y >= GROUND_Y) {
     player.y = GROUND_Y;
@@ -686,6 +729,11 @@ function update(dt) {
     spawnStar();
     nextStarIn = getStarInterval() + Math.floor(Math.random()*100);
   }
+  nextEvilStarIn -= df;
+  if (nextEvilStarIn <= 0) {
+    spawnEvilStar();
+    nextEvilStarIn = getEvilStarInterval() + Math.floor(Math.random()*200);
+  }
 
   for (let i = villains.length-1; i >= 0; i--) {
     villains[i].x -= speed * df;
@@ -698,12 +746,26 @@ function update(dt) {
     stars[i].bob += 0.05 * df;
     if (stars[i].x < -60) { stars.splice(i,1); continue; }
     if (overlaps(player, 'butterfly', stars[i], 'star')) {
-      burst(stars[i].x+25, stars[i].y+21, '#ffe066', 16);
+      burst(stars[i].x+25, stars[i].y+21, '#ffe066', 8);
       stars.splice(i,1);
       if (player.starsCollected < JUMP_CONFIG.MAX_STARS) {
         player.starsCollected++;
       }
       sfxStar();
+    }
+  }
+
+  // Evil stars: move and check for collision. On contact, remove one collected star.
+  for (let i = evilStars.length-1; i >= 0; i--) {
+    evilStars[i].x -= speed * df;
+    evilStars[i].bob += 0.05 * df;
+    if (evilStars[i].x < -60) { evilStars.splice(i,1); continue; }
+    if (overlaps(player, 'butterfly', evilStars[i], 'evilstar')) {
+      // Red/purple burst to signal a "loss"
+      burst(evilStars[i].x+25, evilStars[i].y+21, '#ff4d6d', 10);
+      evilStars.splice(i,1);
+      if (player.starsCollected > 0) player.starsCollected--;
+      sfxEvilStar();
     }
   }
 
@@ -741,21 +803,32 @@ function draw() {
     ctx.restore();
   });
 
+  evilStars.forEach(s => {
+    const bobY = Math.sin(s.bob)*5;
+    ctx.save();
+    ctx.shadowColor = '#ff4d6d'; // red glow to warn the player
+    ctx.shadowBlur = 16;
+    drawSprite('evilstar', s.x, s.y+bobY, s.w, s.h);
+    ctx.restore();
+  });
+
   villains.forEach(v => drawSprite('villain', v.x, v.y, v.w, v.h));
 
   if (player.starsCollected > 0) drawPlayerStarEffect();
   const bobOffset = player.onGround ? Math.sin(player.wingFlap)*2 : 0;
   drawSprite('butterfly', player.x, player.y + bobOffset, player.w, player.h);
 
-  particles.forEach(p => {
-    ctx.save();
+  // Render particles in a single state — set alpha once per particle but
+  // skip save/restore (they're expensive in canvas). globalAlpha is cheap to set.
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
     ctx.globalAlpha = p.life;
     ctx.fillStyle = p.color;
     ctx.beginPath();
     ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
     ctx.fill();
-    ctx.restore();
-  });
+  }
+  ctx.globalAlpha = 1;
 
   drawStarIndicators();
 }
