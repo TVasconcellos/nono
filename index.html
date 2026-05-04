@@ -1,13 +1,15 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="pt-PT">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Flutter Run</title>
+<title>A fuga da Leonor</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fredoka+One&family=Nunito:wght@400;700&display=swap');
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body { height: 100%; }
 
   body {
     background: #1a0a2e;
@@ -85,7 +87,7 @@
   #overlay {
     position: absolute;
     top: 36px;
-    left: 0; right: 0; bottom: 0;
+    left: 0; right: 0; bottom: 50px;
     border-radius: 16px;
     display: flex;
     flex-direction: column;
@@ -95,21 +97,23 @@
     backdrop-filter: blur(4px);
     gap: 16px;
     transition: opacity 0.3s;
+    padding: 20px;
   }
 
   #overlay.hidden { display: none; }
 
   .overlay-title {
     font-family: 'Fredoka One', cursive;
-    font-size: 52px;
+    font-size: 48px;
     color: #ffe066;
     text-shadow: 0 4px 16px rgba(255,224,102,0.5);
     line-height: 1;
+    text-align: center;
   }
 
   .overlay-sub {
     font-size: 16px;
-    color: rgba(255,255,255,0.6);
+    color: rgba(255,255,255,0.7);
     text-align: center;
     line-height: 1.6;
   }
@@ -137,39 +141,23 @@
   }
   .start-btn:hover { transform: scale(1.05); box-shadow: 0 6px 24px rgba(255,224,102,0.5); }
   .start-btn:active { transform: scale(0.97); }
-
-  #star-indicator {
-    position: absolute;
-    top: 50px;
-    right: 12px;
-    font-family: 'Fredoka One', cursive;
-    font-size: 13px;
-    color: #ffe066;
-    background: rgba(255,224,102,0.15);
-    border: 1px solid rgba(255,224,102,0.3);
-    border-radius: 20px;
-    padding: 3px 10px;
-    display: none;
-    align-items: center;
-    gap: 4px;
-  }
 </style>
 </head>
 <body>
 
 <div id="game-wrapper">
-  <div id="level-display">LEVEL 1</div>
-  <canvas id="canvas" width="800" height="300"></canvas>
+  <div id="level-display">NÍVEL 1</div>
+  <canvas id="canvas" width="800" height="380"></canvas>
   <div id="hud">
-    <div>Score: <span id="score-display">0</span></div>
-    <button id="sound-btn" title="Toggle sound">🔊</button>
-    <div>Best: <span id="hi-display">0</span></div>
+    <div>Pontos: <span id="score-display">0</span></div>
+    <button id="sound-btn" title="Ligar/desligar som">🔊</button>
+    <div>Recorde: <span id="hi-display">0</span></div>
   </div>
   <div id="overlay">
-    <div class="overlay-title" id="overlay-title">Flutter Run</div>
-    <div class="overlay-sub" id="overlay-sub">Help the butterfly dodge the grumpy blobs!<br>Press <b>Space</b> or <b>↑</b> to jump</div>
-    <div class="overlay-score" id="overlay-score" style="display:none">Score: <span id="final-score">0</span> &nbsp;|&nbsp; Best: <span id="final-best">0</span></div>
-    <button class="start-btn" id="start-btn">Let's fly!</button>
+    <div class="overlay-title" id="overlay-title">A fuga da Leonor</div>
+    <div class="overlay-sub" id="overlay-sub">Ajuda a Leonor a fugir das gosmas rabugentas!<br>Carrega em <b>Espaço</b> ou <b>↑</b> para saltar</div>
+    <div class="overlay-score" id="overlay-score" style="display:none">Pontos: <span id="final-score">0</span> &nbsp;|&nbsp; Recorde: <span id="final-best">0</span></div>
+    <button class="start-btn" id="start-btn">Vamos lá!</button>
   </div>
 </div>
 
@@ -192,25 +180,41 @@ ASSET_LIST.forEach(([key, src]) => {
   imgs[key].src = src;
 });
 
+// --- Level palettes (one per level) ---
+const PALETTES = [
+  { top:'#1a0a2e', mid:'#2d1256', bot:'#4a2070', gT:'#3d1f5e', gB:'#1a0a2e', cloud:'#c8b8e8', line:'#7c6fa0' },
+  { top:'#0f2c4a', mid:'#1d4a7a', bot:'#3a7ab0', gT:'#1d4a7a', gB:'#0f2c4a', cloud:'#aed4f0', line:'#5a8fc0' },
+  { top:'#ff8a5b', mid:'#ffb380', bot:'#ffd4a3', gT:'#c4623a', gB:'#7a3820', cloud:'#fff4e0', line:'#a85f3d' },
+  { top:'#0a2818', mid:'#1f5a3a', bot:'#3d8a5e', gT:'#1f5a3a', gB:'#0a2818', cloud:'#c8e8d4', line:'#5a9a78' },
+  { top:'#3a0a4a', mid:'#7a1a8a', bot:'#c44ac4', gT:'#5a1a6a', gB:'#2a0530', cloud:'#f0c8e8', line:'#9a5aa8' },
+  { top:'#0a2a3a', mid:'#1a5a7a', bot:'#3aaab8', gT:'#1a4a5a', gB:'#0a2a3a', cloud:'#c0e8ec', line:'#5aa8b8' },
+  { top:'#4a2010', mid:'#8a4520', bot:'#d48050', gT:'#5a2818', gB:'#2a1008', cloud:'#f0d4b8', line:'#a86848' },
+  { top:'#1a0a3a', mid:'#3a1a6a', bot:'#6a3aaa', gT:'#2a1a5a', gB:'#0a0520', cloud:'#c8b8f0', line:'#7a5ac0' },
+  { top:'#2a0a0a', mid:'#7a1a2a', bot:'#c4404a', gT:'#4a1010', gB:'#1a0505', cloud:'#f0c0c8', line:'#a04050' },
+  { top:'#000000', mid:'#1a0a3a', bot:'#3a1a5a', gT:'#1a0a2a', gB:'#000000', cloud:'#f0e8ff', line:'#a090d0' },
+];
+
 // --- Audio ---
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
 let audioCtx = null;
-let musicGain = null, sfxGain = null;
+let musicGain = null, sfxGain = null, masterGain = null;
 let soundOn = true;
-let musicPlaying = false;
-let musicNodes = [];
+let musicLoopId = null;
 
 function initAudio() {
   if (audioCtx) return;
   audioCtx = new AudioCtx();
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 1;
+  masterGain.connect(audioCtx.destination);
   musicGain = audioCtx.createGain(); musicGain.gain.value = 0.18;
   sfxGain   = audioCtx.createGain(); sfxGain.gain.value = 0.5;
-  musicGain.connect(audioCtx.destination);
-  sfxGain.connect(audioCtx.destination);
+  musicGain.connect(masterGain);
+  sfxGain.connect(masterGain);
 }
 
 function playTone(freq, type, duration, gainNode, when=0, vol=1) {
-  if (!audioCtx || !soundOn) return;
+  if (!audioCtx) return;
   const osc = audioCtx.createOscillator();
   const g   = audioCtx.createGain();
   osc.type = type;
@@ -228,21 +232,17 @@ function sfxStar()   { [600,750,900,1100].forEach((f,i) => playTone(f,'sine',0.1
 function sfxDie()    { [440,330,220,110].forEach((f,i) => playTone(f,'sawtooth',0.18,null,i*0.1,0.6)); }
 function sfxLevel()  { [600,700,800,1000].forEach((f,i) => playTone(f,'triangle',0.12,null,i*0.05)); }
 
-let bgPatternTime = 0;
 function startMusic() {
-  if (musicPlaying || !audioCtx || !soundOn) return;
-  musicPlaying = true;
+  if (musicLoopId !== null || !audioCtx) return;
   const bpm = 128, beat = 60/bpm;
-  // Simple looping arpeggiated melody
   const pattern = [
     [523,0],[659,0.5],[784,1],[659,1.5],
     [523,2],[698,2.5],[880,3],[698,3.5],
     [587,4],[740,4.5],[880,5],[740,5.5],
     [523,6],[659,6.5],[784,7],[659,7.5],
   ];
-  const loopLen = 8; // beats
+  const loopLen = 8;
   function scheduleLoop(startTime) {
-    const nodes = [];
     pattern.forEach(([freq, b]) => {
       const osc = audioCtx.createOscillator();
       const g = audioCtx.createGain();
@@ -254,9 +254,7 @@ function startMusic() {
       g.gain.exponentialRampToValueAtTime(0.001, t + beat * 0.45);
       osc.connect(g); g.connect(musicGain);
       osc.start(t); osc.stop(t + beat * 0.5);
-      nodes.push(osc);
     });
-    // Bass
     [0,2,4,6].forEach(b => {
       const osc = audioCtx.createOscillator();
       const g = audioCtx.createGain();
@@ -268,37 +266,37 @@ function startMusic() {
       g.gain.exponentialRampToValueAtTime(0.001, t + beat*0.8);
       osc.connect(g); g.connect(musicGain);
       osc.start(t); osc.stop(t + beat);
-      nodes.push(osc);
     });
     return startTime + loopLen * beat;
   }
   let nextLoop = audioCtx.currentTime;
   function tick() {
-    if (!musicPlaying) return;
+    if (musicLoopId === null) return;
     if (nextLoop < audioCtx.currentTime + 0.5) {
       nextLoop = scheduleLoop(nextLoop);
     }
-    setTimeout(tick, 200);
+    musicLoopId = setTimeout(tick, 200);
   }
-  tick();
+  musicLoopId = setTimeout(tick, 0);
 }
 
-function stopMusic() { musicPlaying = false; }
+function stopMusic() {
+  if (musicLoopId !== null) { clearTimeout(musicLoopId); musicLoopId = null; }
+}
 
 // --- Game State ---
-const GROUND_Y = H - 50;
-const GRAVITY = 0.7;
+const GROUND_Y = H - 130;
+const GRAVITY = 0.6;
 const LEVEL_DISTANCES = [0,800,1800,3000,4500,6200,8200,10500,13000,16000];
 
-let state = 'idle'; // idle | running | dead
+let state = 'idle';
 let score = 0;
-let hiScore = parseInt(localStorage.getItem('flutterrun_hi') || '0');
+let hiScore = parseInt(localStorage.getItem('leonor_hi') || '0');
 let distance = 0;
 let level = 1;
-let speed = 4;
+let speed = 3;
 let frameCount = 0;
 
-// Player
 const player = {
   x: 120, y: GROUND_Y, w: 100, h: 104,
   vy: 0, onGround: true,
@@ -306,12 +304,10 @@ const player = {
   wingFlap: 0,
 };
 
-// Entities
 let villains = [];
 let stars = [];
 let particles = [];
 
-// Bounding boxes (65% of sprite, centred)
 function bbox(e) {
   const mx = e.w * 0.175, my = e.h * 0.175;
   return { x: e.x + mx, y: e.y + my, w: e.w * 0.65, h: e.h * 0.65 };
@@ -322,45 +318,52 @@ function overlaps(a, b) {
   return ba.x < bb.x+bb.w && ba.x+ba.w > bb.x && ba.y < bb.y+bb.h && ba.y+ba.h > bb.y;
 }
 
-// Cloud data
-const clouds = Array.from({length: 6}, (_, i) => ({
-  x: Math.random()*W, y: 30 + Math.random()*80,
-  r: 28 + Math.random()*22, speed: 0.3 + Math.random()*0.4,
-  alpha: 0.15 + Math.random()*0.2,
-}));
+// Cloud objects with stable pre-computed shapes
+function makeCloud() {
+  const r = 22 + Math.random()*16;
+  return {
+    x: Math.random()*W,
+    y: 30 + Math.random()*70,
+    r: r,
+    speed: 0.2 + Math.random()*0.3,
+    alpha: 0.3 + Math.random()*0.25,
+    puffs: [
+      { dx: 0,         dy: 0,        rs: 1.0  },
+      { dx: r*0.7,     dy: -r*0.15,  rs: 0.75 },
+      { dx: -r*0.8,    dy: -r*0.05,  rs: 0.7  },
+      { dx: r*0.3,     dy: r*0.2,    rs: 0.65 },
+      { dx: -r*0.3,    dy: r*0.25,   rs: 0.6  },
+    ],
+  };
+}
+const clouds = Array.from({length: 6}, makeCloud);
 
-// --- Spawn logic ---
 function getSpawnInterval() {
-  // Base interval decreases with level; more blobs at higher levels
-  return Math.max(55, 130 - level * 8);
+  return Math.max(70, 170 - level * 8);
 }
 function getStarInterval() {
-  // Star appears less often at higher levels
-  return 400 + level * 60;
+  return 350 + level * 60;
 }
 function getVillainCount() {
-  // Sometimes spawn 2 at higher levels
-  if (level >= 5 && Math.random() < 0.3) return 2;
-  if (level >= 8 && Math.random() < 0.5) return 2;
+  if (level >= 6 && Math.random() < 0.3) return 2;
+  if (level >= 9 && Math.random() < 0.5) return 2;
   return 1;
 }
 
-let nextVillainIn = 80;
-let nextStarIn = 300;
+let nextVillainIn = 120;
+let nextStarIn = 250;
 
-// --- Spawn ---
 function spawnVillain() {
   const count = getVillainCount();
-  const gap = 130;
+  const gap = 150;
   for (let i = 0; i < count; i++) {
     villains.push({ x: W + i*gap, y: GROUND_Y + (104-90), w: 85, h: 90 });
   }
 }
 function spawnStar() {
-  stars.push({ x: W + 50, y: GROUND_Y - 80 - Math.random()*40, w: 50, h: 42, bob: Math.random()*Math.PI*2 });
+  stars.push({ x: W + 50, y: GROUND_Y - 90 - Math.random()*30, w: 50, h: 42, bob: Math.random()*Math.PI*2 });
 }
 
-// --- Particles ---
 function burst(x, y, color, n=12) {
   for (let i=0; i<n; i++) {
     const angle = Math.random()*Math.PI*2;
@@ -370,17 +373,16 @@ function burst(x, y, color, n=12) {
   }
 }
 
-// --- Level up ---
 function checkLevel() {
   for (let i=9; i>=0; i--) {
     if (distance >= LEVEL_DISTANCES[i]) {
       const newLevel = i+1;
       if (newLevel !== level) {
         level = newLevel;
-        speed = 4 + (level-1)*0.6;
+        speed = 3 + (level-1)*0.55;
         sfxLevel();
         const ld = document.getElementById('level-display');
-        ld.textContent = `LEVEL ${level}`;
+        ld.textContent = `NÍVEL ${level}`;
         ld.classList.remove('level-up');
         void ld.offsetWidth;
         ld.classList.add('level-up');
@@ -390,11 +392,9 @@ function checkLevel() {
   }
 }
 
-// --- Input ---
-let jumpPressed = false;
 function doJump() {
   if (!player.onGround) return;
-  const jumpPower = player.starActive ? -18 : -13;
+  const jumpPower = player.starActive ? -19 : -15;
   player.vy = jumpPower;
   player.onGround = false;
   sfxJump();
@@ -411,22 +411,24 @@ document.addEventListener('keydown', e => {
 document.getElementById('start-btn').addEventListener('click', () => startGame());
 
 document.getElementById('sound-btn').addEventListener('click', () => {
+  initAudio();
   soundOn = !soundOn;
   document.getElementById('sound-btn').textContent = soundOn ? '🔊' : '🔇';
-  if (soundOn && state === 'running') startMusic();
-  else stopMusic();
+  if (masterGain && audioCtx) {
+    masterGain.gain.setTargetAtTime(soundOn ? 1 : 0, audioCtx.currentTime, 0.02);
+  }
 });
 
-// --- Game control ---
 function startGame() {
   initAudio();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
   state = 'running';
-  score = 0; distance = 0; level = 1; speed = 4; frameCount = 0;
+  score = 0; distance = 0; level = 1; speed = 3; frameCount = 0;
   player.y = GROUND_Y; player.vy = 0; player.onGround = true;
   player.starActive = false; player.starTimer = 0;
   villains = []; stars = []; particles = [];
-  nextVillainIn = 80; nextStarIn = 300;
-  document.getElementById('level-display').textContent = 'LEVEL 1';
+  nextVillainIn = 120; nextStarIn = 250;
+  document.getElementById('level-display').textContent = 'NÍVEL 1';
   document.getElementById('overlay').classList.add('hidden');
   startMusic();
 }
@@ -436,42 +438,42 @@ function gameOver() {
   sfxDie();
   stopMusic();
   burst(player.x + 50, player.y + 52, '#ff6b6b', 20);
-  if (score > hiScore) { hiScore = score; localStorage.setItem('flutterrun_hi', hiScore); }
+  if (Math.floor(score) > hiScore) {
+    hiScore = Math.floor(score);
+    localStorage.setItem('leonor_hi', hiScore);
+  }
   setTimeout(() => {
     document.getElementById('overlay').classList.remove('hidden');
-    document.getElementById('overlay-title').textContent = 'Oops!';
-    document.getElementById('overlay-sub').textContent = 'The grumpy blob got you!';
+    document.getElementById('overlay-title').textContent = 'Oh não!';
+    document.getElementById('overlay-sub').textContent = 'A gosma apanhou-te!';
     document.getElementById('overlay-score').style.display = 'block';
     document.getElementById('final-score').textContent = Math.floor(score);
     document.getElementById('final-best').textContent = hiScore;
-    document.getElementById('start-btn').textContent = 'Try again!';
+    document.getElementById('start-btn').textContent = 'Tentar outra vez!';
   }, 600);
 }
 
-// --- Draw helpers ---
-function drawCloud(c) {
+function drawCloud(c, palette) {
   ctx.save();
   ctx.globalAlpha = c.alpha;
-  ctx.fillStyle = '#c8b8e8';
-  ctx.beginPath();
-  ctx.arc(c.x, c.y, c.r, 0, Math.PI*2);
-  ctx.arc(c.x+c.r*0.8, c.y-c.r*0.3, c.r*0.7, 0, Math.PI*2);
-  ctx.arc(c.x-c.r*0.7, c.y-c.r*0.2, c.r*0.6, 0, Math.PI*2);
-  ctx.fill();
+  ctx.fillStyle = palette.cloud;
+  c.puffs.forEach(p => {
+    ctx.beginPath();
+    ctx.arc(c.x + p.dx, c.y + p.dy, c.r * p.rs, 0, Math.PI*2);
+    ctx.fill();
+  });
   ctx.restore();
 }
 
-function drawGround() {
-  // Soft ground strip
+function drawGround(palette) {
   const grd = ctx.createLinearGradient(0, GROUND_Y+104, 0, H);
-  grd.addColorStop(0, '#3d1f5e');
-  grd.addColorStop(1, '#1a0a2e');
+  grd.addColorStop(0, palette.gT);
+  grd.addColorStop(1, palette.gB);
   ctx.fillStyle = grd;
   ctx.fillRect(0, GROUND_Y+104, W, H-(GROUND_Y+104));
-  // Ground line with glow
-  ctx.shadowColor = '#a08fc0';
+  ctx.shadowColor = palette.line;
   ctx.shadowBlur = 6;
-  ctx.strokeStyle = '#7c6fa0';
+  ctx.strokeStyle = palette.line;
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(0, GROUND_Y+104); ctx.lineTo(W, GROUND_Y+104);
@@ -479,12 +481,11 @@ function drawGround() {
   ctx.shadowBlur = 0;
 }
 
-function drawBg() {
-  // Sky gradient
+function drawBg(palette) {
   const sky = ctx.createLinearGradient(0, 0, 0, GROUND_Y+104);
-  sky.addColorStop(0,   '#1a0a2e');
-  sky.addColorStop(0.5, '#2d1256');
-  sky.addColorStop(1,   '#4a2070');
+  sky.addColorStop(0,   palette.top);
+  sky.addColorStop(0.5, palette.mid);
+  sky.addColorStop(1,   palette.bot);
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, W, H);
 }
@@ -497,7 +498,6 @@ function drawSprite(key, x, y, w, h, alpha=1) {
   ctx.restore();
 }
 
-// Star power shimmer effect
 function drawPlayerStarEffect() {
   ctx.save();
   const t = Date.now()/300;
@@ -508,12 +508,10 @@ function drawPlayerStarEffect() {
   ctx.restore();
 }
 
-// --- Main loop ---
 function update() {
   if (state !== 'running') return;
   frameCount++;
 
-  // Player physics
   player.vy += GRAVITY;
   player.y += player.vy;
   if (player.y >= GROUND_Y) {
@@ -522,25 +520,20 @@ function update() {
     player.onGround = true;
   }
 
-  // Star power timer
   if (player.starActive) {
     player.starTimer--;
     if (player.starTimer <= 0) { player.starActive = false; }
   }
 
-  // Wing flap
   player.wingFlap = (player.wingFlap + 0.25) % (Math.PI*2);
 
-  // Score & distance
   distance += speed;
   score += speed * 0.05;
   document.getElementById('score-display').textContent = Math.floor(score);
   document.getElementById('hi-display').textContent = Math.max(hiScore, Math.floor(score));
 
-  // Level
   checkLevel();
 
-  // Spawn
   nextVillainIn--;
   if (nextVillainIn <= 0) {
     spawnVillain();
@@ -552,14 +545,12 @@ function update() {
     nextStarIn = getStarInterval() + Math.floor(Math.random()*100);
   }
 
-  // Move & cull villains
   for (let i = villains.length-1; i >= 0; i--) {
     villains[i].x -= speed;
     if (villains[i].x < -100) { villains.splice(i,1); continue; }
     if (overlaps(player, villains[i])) { gameOver(); return; }
   }
 
-  // Move & cull stars
   for (let i = stars.length-1; i >= 0; i--) {
     stars[i].x -= speed;
     stars[i].bob += 0.05;
@@ -573,7 +564,6 @@ function update() {
     }
   }
 
-  // Particles
   for (let i = particles.length-1; i >= 0; i--) {
     const p = particles[i];
     p.x += p.vx; p.y += p.vy; p.vy += 0.15;
@@ -581,23 +571,28 @@ function update() {
     if (p.life <= 0) particles.splice(i,1);
   }
 
-  // Clouds drift
   clouds.forEach(c => {
     c.x -= c.speed;
-    if (c.x < -80) { c.x = W+40; c.y = 30+Math.random()*80; }
+    if (c.x < -80) {
+      const fresh = makeCloud();
+      Object.assign(c, fresh, { x: W+40 });
+    }
   });
 }
 
-function draw() {
-  ctx.clearRect(0, 0, W, H);
-  drawBg();
-  clouds.forEach(drawCloud);
-  drawGround();
+function getCurrentPalette() {
+  return PALETTES[Math.min(level-1, 9)];
+}
 
-  // Stars
+function draw() {
+  const palette = getCurrentPalette();
+  ctx.clearRect(0, 0, W, H);
+  drawBg(palette);
+  clouds.forEach(c => drawCloud(c, palette));
+  drawGround(palette);
+
   stars.forEach(s => {
     const bobY = Math.sin(s.bob)*5;
-    // Glow
     ctx.save();
     ctx.shadowColor = '#ffe066';
     ctx.shadowBlur = 14;
@@ -605,16 +600,12 @@ function draw() {
     ctx.restore();
   });
 
-  // Villains
   villains.forEach(v => drawSprite('villain', v.x, v.y, v.w, v.h));
 
-  // Player
   if (player.starActive) drawPlayerStarEffect();
-  // Slight wing bob when on ground
   const bobOffset = player.onGround ? Math.sin(player.wingFlap)*2 : 0;
   drawSprite('butterfly', player.x, player.y + bobOffset, player.w, player.h);
 
-  // Star timer bar
   if (player.starActive) {
     const pct = player.starTimer / 300;
     ctx.fillStyle = 'rgba(255,224,102,0.2)';
@@ -623,7 +614,6 @@ function draw() {
     ctx.fillRect(player.x, player.y - 10, player.w * pct, 5);
   }
 
-  // Particles
   particles.forEach(p => {
     ctx.save();
     ctx.globalAlpha = p.life;
@@ -633,10 +623,6 @@ function draw() {
     ctx.fill();
     ctx.restore();
   });
-
-  // Debug bboxes (comment out for production)
-  // ctx.strokeStyle='lime'; ctx.lineWidth=1;
-  // [player,...villains,...stars].forEach(e=>{const b=bbox(e);ctx.strokeRect(b.x,b.y,b.w,b.h);});
 }
 
 function loop() {
@@ -645,7 +631,6 @@ function loop() {
   requestAnimationFrame(loop);
 }
 
-// Update hi score display on load
 document.getElementById('hi-display').textContent = hiScore;
 loop();
 </script>
