@@ -143,6 +143,80 @@
   }
   .start-btn:hover { transform: scale(1.05); box-shadow: 0 6px 24px rgba(255,224,102,0.5); }
   .start-btn:active { transform: scale(0.97); }
+
+  /* --- Leaderboard --- */
+  #leaderboard {
+    margin-top: 4px;
+    width: 100%;
+    max-width: 360px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,224,102,0.25);
+    border-radius: 12px;
+    padding: 12px 16px;
+    font-size: 14px;
+    color: rgba(255,255,255,0.85);
+  }
+  #leaderboard-title {
+    font-family: 'Fredoka One', cursive;
+    color: #ffe066;
+    font-size: 15px;
+    letter-spacing: 1px;
+    text-align: center;
+    margin-bottom: 8px;
+  }
+  #leaderboard-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  #leaderboard-list li {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 6px;
+    border-radius: 6px;
+  }
+  #leaderboard-list li:nth-child(odd) { background: rgba(255,255,255,0.04); }
+  #leaderboard-list .rank { color: #ff9f43; min-width: 24px; font-family: 'Fredoka One', cursive; }
+  #leaderboard-list .name { flex: 1; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #leaderboard-list .pts  { color: #ffe066; font-family: 'Fredoka One', cursive; }
+  #leaderboard-empty, #leaderboard-error {
+    text-align: center;
+    color: rgba(255,255,255,0.5);
+    font-style: italic;
+    padding: 4px 0;
+  }
+
+  /* --- Top-5 name prompt --- */
+  #name-prompt {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+  #name-prompt input {
+    width: 220px;
+    padding: 10px 14px;
+    border-radius: 50px;
+    border: 2px solid rgba(255,224,102,0.5);
+    background: rgba(255,255,255,0.95);
+    color: #1a0a2e;
+    font-family: 'Nunito', sans-serif;
+    font-size: 16px;
+    font-weight: 700;
+    text-align: center;
+    outline: none;
+  }
+  #name-prompt input:focus { border-color: #ffe066; box-shadow: 0 0 0 4px rgba(255,224,102,0.25); }
+  #name-prompt-celebration {
+    font-family: 'Fredoka One', cursive;
+    color: #ffe066;
+    font-size: 18px;
+    text-shadow: 0 2px 8px rgba(255,224,102,0.4);
+  }
+  #name-submit-btn:disabled {
+    opacity: 0.5;
+    cursor: wait;
+  }
 </style>
 </head>
 <body>
@@ -159,11 +233,39 @@
     <div class="overlay-title" id="overlay-title">A fuga da Leonor</div>
     <div class="overlay-sub" id="overlay-sub">Ajuda a Leonor a fugir das gosmas rabugentas!<br>Carrega em <b>Espaço</b> ou <b>↑</b> para saltar</div>
     <div class="overlay-score" id="overlay-score" style="display:none">Pontos: <span id="final-score">0</span> &nbsp;|&nbsp; Recorde: <span id="final-best">0</span></div>
+
+    <!-- Top-5 name entry — shown only when the player's score qualifies -->
+    <div id="name-prompt" style="display:none">
+      <div id="name-prompt-celebration">🏆 Entraste no Top 5!</div>
+      <input id="name-input" type="text" maxlength="12" placeholder="O teu nome" autocomplete="off" spellcheck="false">
+      <button class="start-btn" id="name-submit-btn">Guardar</button>
+    </div>
+
     <button class="start-btn" id="start-btn">Vamos lá!</button>
+
+    <!-- Global Top-5 leaderboard (loaded from Supabase) -->
+    <div id="leaderboard">
+      <div id="leaderboard-title">🏆 TOP 5 GLOBAL</div>
+      <ol id="leaderboard-list"></ol>
+      <div id="leaderboard-empty" style="display:none">Ainda ninguém pontuou. Sê o primeiro!</div>
+      <div id="leaderboard-error" style="display:none">Não foi possível carregar.</div>
+    </div>
   </div>
 </div>
 
 <script>
+// =============================================================
+// 🏆 GLOBAL LEADERBOARD (Supabase) — config
+// =============================================================
+// To rotate the key or move providers, change these two values.
+// The `anon` key is intentionally public-safe — security is enforced
+// by Row Level Security policies on the database side (see SQL setup).
+const SUPABASE_URL = 'https://jrinhbdlkstrxaxnyrve.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpyaW5oYmRsa3N0cnhheG55cnZlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4OTkzNDcsImV4cCI6MjA5NTQ3NTM0N30.Br1ciKyfd97IiclxSrjDXVeSFrPFJknFh3lg3wT6qkA';
+const LEADERBOARD_SIZE = 5;
+const NAME_MAX_LENGTH = 12;
+// =============================================================
+
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const W = canvas.width, H = canvas.height;
@@ -557,6 +659,9 @@ function currentGravity() {
 
 document.addEventListener('keydown', e => {
   if (e.code === 'Space' || e.code === 'ArrowUp') {
+    // When the name prompt is showing, let Space/Up flow into the input
+    // so the player can type their name without restarting the game.
+    if (isNamePromptOpen()) return;
     e.preventDefault();
     if (state === 'idle') {
       startGame();
@@ -583,10 +688,173 @@ document.getElementById('sound-btn').addEventListener('click', () => {
   musicAudio.muted = !soundOn;
 });
 
+// =============================================================
+// 🏆 Leaderboard (Supabase) — fetch, submit, and render
+// =============================================================
+// State
+let cachedTop5 = null;       // last-known top-5 array, used for instant top-5 checks
+let leaderboardLoading = false;
+let nameSubmitInFlight = false;
+
+// DOM shortcuts
+const $list  = document.getElementById('leaderboard-list');
+const $empty = document.getElementById('leaderboard-empty');
+const $error = document.getElementById('leaderboard-error');
+const $namePrompt = document.getElementById('name-prompt');
+const $nameInput  = document.getElementById('name-input');
+const $nameSubmit = document.getElementById('name-submit-btn');
+
+function isNamePromptOpen() {
+  return $namePrompt.style.display !== 'none';
+}
+
+// Common headers for all Supabase REST calls
+function supabaseHeaders(extra = {}) {
+  return {
+    'apikey': SUPABASE_ANON_KEY,
+    'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+    'Content-Type': 'application/json',
+    ...extra,
+  };
+}
+
+async function fetchTop5() {
+  // Returns array of {name, score} sorted desc, or throws on network/server error
+  const url = `${SUPABASE_URL}/rest/v1/leaderboard?select=name,score&order=score.desc&limit=${LEADERBOARD_SIZE}`;
+  const res = await fetch(url, { headers: supabaseHeaders() });
+  if (!res.ok) throw new Error(`Leaderboard fetch failed: ${res.status}`);
+  return await res.json();
+}
+
+async function submitScore(name, score) {
+  const url = `${SUPABASE_URL}/rest/v1/leaderboard`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: supabaseHeaders({ 'Prefer': 'return=minimal' }),
+    body: JSON.stringify({ name, score }),
+  });
+  if (!res.ok) throw new Error(`Score submit failed: ${res.status}`);
+}
+
+// Render the cached top-5 into the overlay list
+function renderLeaderboard() {
+  $list.innerHTML = '';
+  $empty.style.display = 'none';
+  $error.style.display = 'none';
+
+  if (!cachedTop5) {
+    // Still loading
+    $list.innerHTML = '<li style="justify-content:center;color:rgba(255,255,255,0.5);font-style:italic">A carregar...</li>';
+    return;
+  }
+  if (cachedTop5.length === 0) {
+    $empty.style.display = 'block';
+    return;
+  }
+  cachedTop5.forEach((row, i) => {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="rank">${i+1}.</span><span class="name"></span><span class="pts">${row.score}</span>`;
+    // Set name via textContent to avoid any HTML-injection risk
+    li.querySelector('.name').textContent = row.name;
+    $list.appendChild(li);
+  });
+}
+
+// Refresh the leaderboard from the server (called on overlay show)
+async function refreshLeaderboard() {
+  if (leaderboardLoading) return;
+  leaderboardLoading = true;
+  try {
+    cachedTop5 = await fetchTop5();
+    renderLeaderboard();
+  } catch (e) {
+    console.warn('Leaderboard unavailable:', e);
+    cachedTop5 = null;
+    $list.innerHTML = '';
+    $empty.style.display = 'none';
+    $error.style.display = 'block';
+  } finally {
+    leaderboardLoading = false;
+  }
+}
+
+// Does `score` qualify for the top 5? Uses cached top-5 when available.
+function qualifiesForTop5(score) {
+  // If we couldn't load the leaderboard, don't show the prompt (fails gracefully)
+  if (!cachedTop5) return false;
+  // If fewer than 5 entries exist, any positive score qualifies
+  if (cachedTop5.length < LEADERBOARD_SIZE) return score > 0;
+  // Otherwise must beat the 5th place
+  return score > cachedTop5[cachedTop5.length - 1].score;
+}
+
+// Sanitise the player's name: trim, cap length, strip control characters
+function cleanName(raw) {
+  return (raw || '')
+    .replace(/[\u0000-\u001F\u007F]/g, '') // strip control chars
+    .trim()
+    .slice(0, NAME_MAX_LENGTH);
+}
+
+function showNamePrompt() {
+  $namePrompt.style.display = 'flex';
+  $nameInput.value = '';
+  $nameInput.disabled = false;
+  $nameSubmit.disabled = false;
+  $nameSubmit.textContent = 'Guardar';
+  // Hide the regular "Tentar outra vez" button while the prompt is open;
+  // it comes back after submission or skip.
+  document.getElementById('start-btn').style.display = 'none';
+  // Focus the input after a tick so the browser actually moves caret in
+  setTimeout(() => $nameInput.focus(), 50);
+}
+
+function hideNamePrompt() {
+  $namePrompt.style.display = 'none';
+  document.getElementById('start-btn').style.display = '';
+}
+
+async function handleNameSubmit() {
+  if (nameSubmitInFlight) return;
+  const name = cleanName($nameInput.value);
+  if (name.length === 0) {
+    $nameInput.focus();
+    return;
+  }
+  nameSubmitInFlight = true;
+  $nameSubmit.disabled = true;
+  $nameInput.disabled = true;
+  $nameSubmit.textContent = 'A guardar...';
+  try {
+    await submitScore(name, Math.floor(score));
+    // Refresh the leaderboard so the new entry appears immediately
+    await refreshLeaderboard();
+  } catch (e) {
+    console.warn('Could not submit score:', e);
+    // Don't block the user — let them carry on even if the submit failed
+  } finally {
+    nameSubmitInFlight = false;
+    hideNamePrompt();
+  }
+}
+
+$nameSubmit.addEventListener('click', handleNameSubmit);
+$nameInput.addEventListener('keydown', e => {
+  if (e.code === 'Enter') {
+    e.preventDefault();
+    handleNameSubmit();
+  }
+});
+
+// Kick off an initial fetch on page load so the start screen shows scores
+refreshLeaderboard();
+// =============================================================
+
 function startGame() {
   initAudio();
   if (audioCtx.state === 'suspended') audioCtx.resume();
   stopMusic(); // ensure no leftover music from previous round
+  hideNamePrompt(); // in case the user restarts via button mid-prompt
   state = 'running';
   score = 0; distance = 0; level = 1; speed = 3; frameCount = 0;
   player.y = GROUND_Y; player.vy = 0; player.onGround = true;
@@ -604,8 +872,9 @@ function gameOver() {
   sfxDie();
   stopMusic();
   burst(player.x + 50, player.y + 52, '#ff6b6b', 20);
-  if (Math.floor(score) > hiScore) {
-    hiScore = Math.floor(score);
+  const finalScore = Math.floor(score);
+  if (finalScore > hiScore) {
+    hiScore = finalScore;
     localStorage.setItem('leonor_hi', hiScore);
   }
   setTimeout(() => {
@@ -615,9 +884,15 @@ function gameOver() {
     document.getElementById('overlay-title').textContent = 'Oh não!';
     document.getElementById('overlay-sub').textContent = 'A gosma apanhou-te!';
     document.getElementById('overlay-score').style.display = 'block';
-    document.getElementById('final-score').textContent = Math.floor(score);
+    document.getElementById('final-score').textContent = finalScore;
     document.getElementById('final-best').textContent = hiScore;
     document.getElementById('start-btn').textContent = 'Tentar outra vez!';
+    // Refresh the leaderboard so the displayed top-5 reflects the latest scores
+    refreshLeaderboard().then(() => {
+      if (state === 'dead' && qualifiesForTop5(finalScore)) {
+        showNamePrompt();
+      }
+    });
   }, DEATH_LOCKOUT_MS);
 }
 
