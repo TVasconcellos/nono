@@ -2,7 +2,12 @@
 <html lang="pt-PT">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- viewport-fit=cover handles iPhone notches; maximum-scale prevents accidental pinch-zoom into the game -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#1a0a2e">
+<!-- iOS web-app polish -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>A fuga da Leonor</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fredoka+One&family=Nunito:wght@400;700&display=swap');
@@ -54,6 +59,15 @@
     display: block;
     border-radius: 16px;
     box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+    /* On smaller screens the canvas scales to fit the wrapper while keeping aspect ratio.
+       Internal resolution stays 800x380 so game logic doesn't change. */
+    width: 100%;
+    height: auto;
+    max-width: 800px;
+    touch-action: manipulation; /* disables double-tap zoom & delays on the canvas */
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
   }
 
   #hud {
@@ -100,6 +114,8 @@
     gap: 16px;
     transition: opacity 0.3s;
     padding: 20px;
+    /* Safety net: if content (leaderboard etc.) doesn't fit on tiny screens, allow scroll */
+    overflow-y: auto;
   }
 
   #overlay.hidden { display: none; }
@@ -217,6 +233,80 @@
     opacity: 0.5;
     cursor: wait;
   }
+
+  /* =========================
+     Mobile / small-screen mode
+     ========================= */
+  @media (max-width: 768px), (pointer: coarse) {
+    body {
+      /* Fill the full mobile viewport, including past iPhone notches */
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+
+    #game-wrapper {
+      width: 100vw;
+      max-width: 100vw;
+      padding: 0 8px;
+    }
+
+    #level-display {
+      font-size: 18px;
+      margin-bottom: 4px;
+    }
+
+    #canvas {
+      border-radius: 8px;
+      /* Stop the canvas from being taller than the viewport leaves room for */
+      max-height: calc(100vh - 100px);
+      /* Browsers honour either: width:100% with auto height keeps the 800:380 aspect */
+      object-fit: contain;
+    }
+
+    #hud {
+      font-size: 14px;
+      padding: 6px 4px;
+    }
+    #hud span { font-size: 15px; }
+
+    /* Hover states never trigger on touch — keep the button readable instead */
+    #sound-btn { width: 40px; height: 40px; font-size: 20px; }
+
+    .overlay-title { font-size: 36px; }
+    .overlay-sub   { font-size: 14px; }
+    .overlay-score { font-size: 16px; }
+
+    #overlay { padding: 12px; gap: 12px; bottom: 56px; }
+
+    #leaderboard {
+      padding: 10px 12px;
+      font-size: 13px;
+      max-width: 90vw;
+    }
+    #leaderboard-title { font-size: 13px; }
+
+    /* Bigger tap targets for the buttons */
+    .start-btn {
+      font-size: 18px;
+      padding: 14px 36px;
+    }
+
+    /* Make sure the name input doesn't trigger iOS zoom (font-size must be 16px+) */
+    #name-prompt input {
+      font-size: 16px;
+      width: min(80vw, 240px);
+    }
+  }
+
+  /* Landscape phones — make canvas fill more of the height */
+  @media (max-height: 500px) and (pointer: coarse) {
+    #canvas { max-height: calc(100vh - 80px); }
+    #overlay { padding: 8px; gap: 6px; bottom: 44px; top: 28px; }
+    .overlay-title { font-size: 28px; }
+    .overlay-sub   { font-size: 12px; }
+    #leaderboard { padding: 6px 10px; font-size: 12px; }
+    #leaderboard-list li { padding: 2px 4px; }
+    #level-display { font-size: 14px; height: 18px; margin-bottom: 2px; }
+  }
 </style>
 </head>
 <body>
@@ -231,7 +321,7 @@
   </div>
   <div id="overlay">
     <div class="overlay-title" id="overlay-title">A fuga da Leonor</div>
-    <div class="overlay-sub" id="overlay-sub">Ajuda a Leonor a fugir das gosmas rabugentas!<br>Carrega em <b>Espaço</b> ou <b>↑</b> para saltar</div>
+    <div class="overlay-sub" id="overlay-sub">Ajuda a Leonor a fugir das gosmas rabugentas!</div>
     <div class="overlay-score" id="overlay-score" style="display:none">Pontos: <span id="final-score">0</span> &nbsp;|&nbsp; Recorde: <span id="final-best">0</span></div>
 
     <!-- Top-5 name entry — shown only when the player's score qualifies -->
@@ -269,6 +359,10 @@ const NAME_MAX_LENGTH = 12;
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const W = canvas.width, H = canvas.height;
+
+// Detect whether the device is primarily touch. Used elsewhere if needed.
+const isTouchDevice = window.matchMedia('(pointer: coarse)').matches
+                   || ('ontouchstart' in window);
 
 // --- Assets ---
 const imgs = {};
@@ -657,22 +751,51 @@ function currentGravity() {
   return JUMP_CONFIG.GRAVITY * factor;
 }
 
+// Unified "primary action" handler. Called by Space/Up and by canvas tap on mobile.
+// Returns true if the input was consumed (caller may want to preventDefault).
+function handlePrimaryInput() {
+  // When the name prompt is showing, do nothing here — the input field consumes the gesture.
+  if (isNamePromptOpen()) return false;
+  if (state === 'idle') {
+    startGame();
+  } else if (state === 'dead') {
+    // Lockout during the brief death animation so the overlay can appear first
+    if (Date.now() - deathTime >= DEATH_LOCKOUT_MS) startGame();
+  } else {
+    doJump();
+  }
+  return true;
+}
+
 document.addEventListener('keydown', e => {
   if (e.code === 'Space' || e.code === 'ArrowUp') {
-    // When the name prompt is showing, let Space/Up flow into the input
-    // so the player can type their name without restarting the game.
-    if (isNamePromptOpen()) return;
+    if (isNamePromptOpen()) return; // let the key flow into the name input
     e.preventDefault();
-    if (state === 'idle') {
-      startGame();
-    } else if (state === 'dead') {
-      // Ignore presses during the brief death animation window.
-      // The overlay only appears after this delay, so the user knows when they can restart.
-      if (Date.now() - deathTime >= DEATH_LOCKOUT_MS) startGame();
-    } else {
-      doJump();
-    }
+    handlePrimaryInput();
   }
+});
+
+// --- Touch input (mobile) ---
+// Tapping the canvas anywhere = jump. Listen on the canvas only, NOT on the whole
+// document, so taps on overlay buttons (Start, Sound, Guardar) still work normally.
+// We use touchstart for snappiness (no 300ms click delay on older browsers).
+canvas.addEventListener('touchstart', e => {
+  // preventDefault stops the tap from also firing a synthetic mouse click,
+  // and prevents iOS from showing the text-selection magnifier.
+  e.preventDefault();
+  handlePrimaryInput();
+}, { passive: false });
+
+// Also accept clicks on the canvas (covers desktop click and any browser that
+// doesn't translate touchstart to click). Safe because handlePrimaryInput is idempotent
+// within a single user gesture — a touchstart followed by click would just fire two jumps,
+// but preventDefault above blocks the synthetic click on most browsers.
+canvas.addEventListener('click', e => {
+  // On desktop the keyboard is still the main control. We only act on click if it
+  // looks like a touch-originated event (no detail count = synthetic) or a deliberate
+  // mouse click that originated on the canvas (not bubbled from a button).
+  if (e.target !== canvas) return;
+  handlePrimaryInput();
 });
 
 document.getElementById('start-btn').addEventListener('click', () => startGame());
@@ -882,7 +1005,7 @@ function gameOver() {
     if (state !== 'dead') return;
     document.getElementById('overlay').classList.remove('hidden');
     document.getElementById('overlay-title').textContent = 'Oh não!';
-    document.getElementById('overlay-sub').textContent = 'A gosma apanhou-te!';
+    document.getElementById('overlay-sub').style.display = 'none';
     document.getElementById('overlay-score').style.display = 'block';
     document.getElementById('final-score').textContent = finalScore;
     document.getElementById('final-best').textContent = hiScore;
